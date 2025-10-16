@@ -12,32 +12,6 @@ if (!BROWSERBASE_API_KEY || !BROWSERBASE_PROJECT_ID) {
 
 const bb = new Browserbase({ apiKey: BROWSERBASE_API_KEY });
 const app = express();
-app.use(express.json());
-
-app.get("/", (_req, res) => res.send("OK"));
-
-/** Improved robustSelect: for custom dropdowns like BuyCrash */
-    await field.click();
-    await field.fill("");
-    await field.type(value, { delay: 50 });
-
-    // Wait for dropdown suggestion to appear
-    const option = page.locator(`text="${value}"`).first();
-    await option.waitFor({ state: "visible", timeout: 5000 });
-    await option.click();
-    return true;
-  } catch (err) {
-    console.warn(`Dropdown select failed for ${value}:`, err.message);
-    return false;
-  }
-}
-
-/** Full end-to-end flow for BuyCrash */
-app.post("/buycrash_find", async (req, res) => {
-  const { state, jurisdiction, reportNumber, lastName, dateOfIncident, locationStreet } = req.body || {};
-  if (!state || !jurisdiction) return res.status(400).json({ ok: false, error: "State and jurisdiction required" });
-
-  const hasOpt1 = !!reportNumber;
   const hasOpt2 = !!(lastName && dateOfIncident);
   const hasOpt3 = !!(lastName && locationStreet);
   if (!hasOpt1 && !hasOpt2 && !hasOpt3)
