@@ -17,10 +17,6 @@ app.use(express.json());
 app.get("/", (_req, res) => res.send("OK"));
 
 /** Improved robustSelect: for custom dropdowns like BuyCrash */
-async function robustSelect(page, labelRegex, value) {
-  try {
-    const field = page.getByLabel(labelRegex);
-    await field.waitFor({ state: "visible", timeout: 8000 });
     await field.click();
     await field.fill("");
     await field.type(value, { delay: 50 });
@@ -148,10 +144,6 @@ const port = process.env.PORT || 8080;
 app.listen(port, () => console.log(`Server running on port ${port}`));
 
 // --- HELPER reused (same as earlier) ---
-async function robustSelect(page, labelRegex, value) {
-  try {
-    const field = page.getByLabel(labelRegex);
-    await field.waitFor({ state: "visible", timeout: 8000 });
     await field.click();
     await field.fill("");
     await field.type(value, { delay: 50 });
@@ -261,3 +253,21 @@ app.post("/buycrash_resume", async (req, res) => {
     if (browser) await browser.close();
   }
 });
+
+// ✅ Single clean version of robustSelect (kept only once)
+async function robustSelect(page, labelRegex, value) {
+  try {
+    const field = page.getByLabel(labelRegex);
+    await field.waitFor({ state: "visible", timeout: 8000 });
+    await field.click();
+    await field.fill("");
+    await field.type(value, { delay: 50 });
+    const option = page.locator(`text="${value}"`).first();
+    await option.waitFor({ state: "visible", timeout: 5000 });
+    await option.click();
+    return true;
+  } catch (err) {
+    console.warn(`Dropdown select failed for ${value}:`, err.message);
+    return false;
+  }
+}
