@@ -36,17 +36,29 @@ app.post("/lexis_search", async (req, res) => {
   }
 });
 
-/** NEW: BuyCrash flow — select State -> Jurisdiction -> Start Search */
-app.post("/buycrash_search", async (req, res) => {
+/** NEW: BuyCrash flow — select State -> Jurisdiction -> Start Search -> fill -> terms -> add to cart */
+app.post("/buycrash_find", async (req, res) => {
   const {
     state,
     jurisdiction,
     url = "https://buycrash.lexisnexisrisk.com/ui/home",
-    screenshot = false
+    reportNumber,                // option 1
+    lastName, dateOfIncident,    // option 2 (mm/dd/yyyy)
+    locationStreet,              // option 3 (with lastName)
   } = req.body || {};
 
   if (!state || !jurisdiction) {
     return res.status(400).json({ ok: false, error: "state and jurisdiction are required" });
+  }
+
+  const hasOpt1 = !!reportNumber;
+  const hasOpt2 = !!(lastName && dateOfIncident);
+  const hasOpt3 = !!(lastName && locationStreet);
+  if (!hasOpt1 && !hasOpt2 && !hasOpt3) {
+    return res.status(400).json({
+      ok: false,
+      error: "Provide one of: reportNumber OR (lastName + dateOfIncident) OR (lastName + locationStreet)"
+    });
   }
 
   let browser;
@@ -56,12 +68,10 @@ app.post("/buycrash_search", async (req, res) => {
     const context = browser.contexts()[0] || await browser.newContext();
     const page = context.pages()[0] || await context.newPage();
 
-    // 1) Go to the BuyCrash page
+    // --- home: select state & jurisdiction ---
     await page.goto(url, { waitUntil: "domcontentloaded" });
 
-    // Helper: robust select for native <select> OR custom combobox
     async function robustSelect(labelRegex, value) {
-      // Try native <select> by accessible label
       try {
         const sel = page.getByLabel(labelRegex);
         await sel.waitFor({ state: "visible", timeout: 6000 });
@@ -69,8 +79,7 @@ app.post("/buycrash_search", async (req, res) => {
           await sel.selectOption(value);
         });
         return true;
-      } catch (_) {
-        // Try ARIA combobox: click, type, Enter
+      } catch {
         try {
           const combo = page.getByRole("combobox", { name: labelRegex });
           await combo.waitFor({ state: "visible", timeout: 6000 });
@@ -84,40 +93,100 @@ app.post("/buycrash_search", async (req, res) => {
       }
     }
 
-    // 2) Select State
     const stateOK = await robustSelect(/State/i, state);
     if (!stateOK) throw new Error(`Could not select State: ${state}`);
-
-    // 3) Wait briefly for Jurisdiction to enable, then select
     await page.waitForTimeout(800);
     const jurisOK = await robustSelect(/Jurisdiction/i, jurisdiction);
     if (!jurisOK) throw new Error(`Could not select Jurisdiction: ${jurisdiction}`);
 
-    // 4) Click Start Search
     const startBtn = page.getByRole("button", { name: /Start Search/i });
     await startBtn.waitFor({ state: "visible", timeout: 6000 });
     await startBtn.click();
 
-    // 5) Allow navigation / results to load
     await page.waitForLoadState("domcontentloaded");
     await page.waitForLoadState("networkidle").catch(() => {});
 
-    let shot;
-    if (screenshot) {
-      const buf = await page.screenshot({ type: "jpeg", quality: 60, fullPage: true });
-      shot = `data:image/jpeg;base64,${buf.toString("base64")}`;
+    // --- on the Search page: fill one option ---
+    if (hasOpt1) {
+      await page.getByLabel(/Report Number/i).fill(reportNumber);
+    } else if (hasOpt2) {
+      await page.getByLabel(/^Last Name/i).first().fill(lastName);
+      const dateInput =
+        page.getByLabel(/Date of Incident/i).first().or(page.locator("input[placeholder*='mm/dd/yyyy']"));
+      await dateInput.fill(dateOfIncident);
+    } else if (hasOpt3) {
+      await page.getByLabel(/^Last Name/i).first().fill(lastName);
+      await page.getByLabel(/Location Street/i).fill(locationStreet);
     }
 
-    res.json({
+    // --- Try reCAPTCHA checkbox; if not possible, return requiresHumanCaptcha
+    let captchaOk = false;
+    try {
+      const captchaFrame = page.frameLocator("iframe[title*='reCAPTCHA']");
+      await captchaFrame.getByRole("checkbox", { name: /I.?m not a robot/i }).click({ timeout: 4000 });
+      await page.waitForTimeout(1500);
+      captchaOk = true;
+    } catch {
+      // cannot reliably solve; require human
+    }
+
+    if (!captchaOk) {
+      return res.json({
+        ok: true,
+        state, jurisdiction,
+        step: "captcha",
+        requiresHumanCaptcha: true,
+        pageUrl: page.url(),
+        note: "Solve the CAPTCHA in a browser, then resume."
+      });
+    }
+
+    // --- click Search ---
+    const searchBtn = page.getByRole("button", { name: /^Search$/i });
+    await searchBtn.waitFor({ state: "visible", timeout: 6000 });
+    await searchBtn.click();
+
+    // --- Terms of Use modal ---
+    try {
+      const modal = page.getByRole("dialog", { name: /Terms of Use/i });
+      await modal.waitFor({ state: "visible", timeout: 4000 });
+      await modal.getByRole("button", { name: /^OK$/i }).click();
+    } catch { /* modal may not appear */ }
+
+    await page.waitForLoadState("domcontentloaded");
+    await page.waitForLoadState("networkidle").catch(() => {});
+
+    // --- results?
+    const resultsHeader = page.locator("text=/records? found/i");
+    const hasResults = await resultsHeader.first().isVisible().catch(() => false);
+
+    if (!hasResults) {
+      return res.json({
+        ok: true,
+        state, jurisdiction,
+        step: "no_results_or_validation",
+        pageUrl: page.url()
+      });
+    }
+
+    // --- click Add to Cart and return next page URL
+    const addToCart = page.getByRole("button", { name: /Add to Cart/i }).first();
+    await addToCart.waitFor({ state: "visible", timeout: 6000 });
+    await addToCart.click();
+
+    await page.waitForLoadState("domcontentloaded");
+    await page.waitForLoadState("networkidle").catch(() => {});
+    const cartUrl = page.url();
+
+    return res.json({
       ok: true,
-      visited: url,
-      state,
-      jurisdiction,
-      resultUrl: page.url(),
-      screenshot: screenshot ? shot : undefined
+      state, jurisdiction,
+      queryUsed: { reportNumber, lastName, dateOfIncident, locationStreet },
+      step: "added_to_cart",
+      cartUrl
     });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e?.message || String(e) });
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
   } finally {
     if (browser) await browser.close();
   }
