@@ -25,6 +25,7 @@ app.post("/lexis_search", async (req, res) => {
     browser = await chromium.connectOverCDP(session.connectUrl);
     const context = browser.contexts()[0] || await browser.newContext();
     const page = context.pages()[0] || await context.newPage();
+
     await page.goto(portalUrl, { waitUntil: "domcontentloaded" });
     const title = await page.title();
     res.json({ ok: true, visited: portalUrl, title });
@@ -55,32 +56,29 @@ app.post("/buycrash_search", async (req, res) => {
     const context = browser.contexts()[0] || await browser.newContext();
     const page = context.pages()[0] || await context.newPage();
 
-    // 1) Go to the BuyCrash home
+    // 1) Go to the BuyCrash page
     await page.goto(url, { waitUntil: "domcontentloaded" });
 
     // Helper: robust select for native <select> OR custom combobox
     async function robustSelect(labelRegex, value) {
-      // Try native <select> first via accessible label
+      // Try native <select> by accessible label
       try {
         const sel = page.getByLabel(labelRegex);
-        await sel.waitFor({ state: "visible", timeout: 5000 });
+        await sel.waitFor({ state: "visible", timeout: 6000 });
         await sel.selectOption({ label: value }).catch(async () => {
-          // fallback: by value text
           await sel.selectOption(value);
         });
         return true;
       } catch (_) {
-        // Try ARIA combobox
+        // Try ARIA combobox: click, type, Enter
         try {
           const combo = page.getByRole("combobox", { name: labelRegex });
-          await combo.waitFor({ state: "visible", timeout: 5000 });
+          await combo.waitFor({ state: "visible", timeout: 6000 });
           await combo.click();
-          // Some custom UIs require typing then Enter
-          await page.keyboard.type(value, { delay: 30 });
-          // Wait for an option to appear, then Enter
+          await page.keyboard.type(value, { delay: 25 });
           await page.keyboard.press("Enter");
           return true;
-        } catch (e2) {
+        } catch {
           return false;
         }
       }
@@ -90,23 +88,19 @@ app.post("/buycrash_search", async (req, res) => {
     const stateOK = await robustSelect(/State/i, state);
     if (!stateOK) throw new Error(`Could not select State: ${state}`);
 
-    // 3) Wait for Jurisdiction to enable/appear, then select
-    //    (the field appears after state; give it time)
-    await page.waitForTimeout(800); // small debounce for dynamic UI
+    // 3) Wait briefly for Jurisdiction to enable, then select
+    await page.waitForTimeout(800);
     const jurisOK = await robustSelect(/Jurisdiction/i, jurisdiction);
     if (!jurisOK) throw new Error(`Could not select Jurisdiction: ${jurisdiction}`);
 
     // 4) Click Start Search
-    const startBtn =
-      page.getByRole("button", { name: /Start Search/i }) ||
-      page.locator("button:has-text('Start Search')");
-    await startBtn.waitFor({ state: "visible", timeout: 5000 });
+    const startBtn = page.getByRole("button", { name: /Start Search/i });
+    await startBtn.waitFor({ state: "visible", timeout: 6000 });
     await startBtn.click();
 
-    // 5) Give page time to navigate/load results
+    // 5) Allow navigation / results to load
     await page.waitForLoadState("domcontentloaded");
-    // Some flows do async fetch; be a bit patient:
-    await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => {});
+    await page.waitForLoadState("networkidle").catch(() => {});
 
     let shot;
     if (screenshot) {
